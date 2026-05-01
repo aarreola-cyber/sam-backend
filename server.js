@@ -24,102 +24,132 @@ function getSesion(id) {
   return sesiones.get(id);
 }
 
-// ===== FUNCIÓN IA =====
+// ===== OPENAI =====
 async function generarSam(historial) {
-  const prompt = `
+  try {
+    const prompt = `
 Tu nombre es Sam.
-Eres cálida, conversacional, inteligente.
+Eres cálida, conversacional y natural.
 Respondes corto.
-No respondes a todo.
 
 Conversación:
 ${historial.slice(-6).join("\n")}
 `;
 
-  const ai = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      model: "gpt-5.3",
-      temperature: 1,
-      messages: [{ role: "system", content: prompt }]
-    })
-  });
+    const ai = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        temperature: 1,
+        messages: [{ role: "system", content: prompt }]
+      })
+    });
 
-  const json = await ai.json();
-  return json.choices[0].message.content;
+    const json = await ai.json();
+
+    if (!json.choices) {
+      console.log("ERROR OPENAI:", json);
+      return "mm... algo raro pasó, pero sigo aquí.";
+    }
+
+    return json.choices[0].message.content;
+
+  } catch (err) {
+    console.error("ERROR SAM:", err);
+    return "no pude responder bien... pero sigo aquí.";
+  }
 }
 
-// ===== FUNCIÓN VOZ =====
+// ===== VOZ =====
 async function generarVoz(texto) {
-  const voz = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${process.env.VOICE_ID}`, {
-    method: "POST",
-    headers: {
-      "xi-api-key": process.env.ELEVEN_API_KEY,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      text: texto,
-      voice_settings: {
-        stability: 0.5,
-        similarity_boost: 0.8
+  try {
+    const voz = await fetch(
+      `https://api.elevenlabs.io/v1/text-to-speech/${process.env.VOICE_ID}`,
+      {
+        method: "POST",
+        headers: {
+          "xi-api-key": process.env.ELEVEN_API_KEY,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          text: texto,
+          voice_settings: {
+            stability: 0.5,
+            similarity_boost: 0.8
+          }
+        })
       }
-    })
-  });
+    );
 
-  const buffer = await voz.arrayBuffer();
-  return Buffer.from(buffer).toString("base64");
+    const buffer = await voz.arrayBuffer();
+    return Buffer.from(buffer).toString("base64");
+
+  } catch (err) {
+    console.error("ERROR VOZ:", err);
+    return null; // 👈 importante
+  }
 }
 
-// ===== SOCKETS (EVENTO REAL) =====
+// ===== SOCKETS =====
 io.on("connection", (socket) => {
 
   socket.on("msg", async (data) => {
-    const { nombre, mensaje, sessionId } = data;
+    try {
+      const { nombre, mensaje, sessionId } = data;
 
-    const s = getSesion(sessionId);
+      const s = getSesion(sessionId);
 
-    if (!s.personas[nombre]) {
-      s.personas[nombre] = { mensajes: 0 };
-    }
+      if (!s.personas[nombre]) {
+        s.personas[nombre] = { mensajes: 0 };
+      }
 
-    s.personas[nombre].mensajes++;
-    s.historial.push(`${nombre}: ${mensaje}`);
+      s.personas[nombre].mensajes++;
+      s.historial.push(`${nombre}: ${mensaje}`);
 
-    // broadcast humano
-    io.emit("chat", { nombre, mensaje });
+      // mensaje humano
+      io.emit("chat", { nombre, mensaje });
 
-    // Sam decide si responde (natural)
-    if (Math.random() > 0.4) {
-      const texto = await generarSam(s.historial);
-      const audio = await generarVoz(texto);
+      // Sam responde a veces (natural)
+      if (Math.random() > 0.4) {
+        const texto = await generarSam(s.historial);
+        const audio = await generarVoz(texto);
 
-      io.emit("sam", { text: texto, audio });
+        io.emit("sam", { text: texto, audio });
+      }
+
+    } catch (err) {
+      console.error("ERROR SOCKET:", err);
     }
   });
 
 });
 
-// ===== ENDPOINT PARA PRUEBAS (curl) =====
+// ===== ENDPOINT TEST =====
 app.post("/chat", async (req, res) => {
-  const { mensaje, nombre, sessionId } = req.body;
+  try {
+    const { mensaje, nombre, sessionId } = req.body;
 
-  const s = getSesion(sessionId);
+    const s = getSesion(sessionId);
+    s.historial.push(`${nombre}: ${mensaje}`);
 
-  s.historial.push(`${nombre}: ${mensaje}`);
+    const texto = await generarSam(s.historial);
+    const audio = await generarVoz(texto);
 
-  const texto = await generarSam(s.historial);
-  const audio = await generarVoz(texto);
+    res.json({ text: texto, audio });
 
-  res.json({ text: texto, audio });
+  } catch (err) {
+    console.error("ERROR /chat:", err);
+    res.status(500).json({ error: "falló backend" });
+  }
 });
 
-// ===== TEST SIMPLE =====
+// ===== ROOT =====
 app.get("/", (req, res) => {
-  res.send("Sam backend activo");
+  res.send("Sam backend activo 🚀");
 });
 
 // ===== START =====
