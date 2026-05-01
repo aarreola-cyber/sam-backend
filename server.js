@@ -1,163 +1,128 @@
 import express from "express";
 import http from "http";
 import { Server } from "socket.io";
-import fetch from "node-fetch";
 import cors from "cors";
 
 const app = express();
 app.use(cors());
-app.use(express.json());
 
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: "*" } });
+const io = new Server(server, {
+  cors: { origin: "*" }
+});
 
+// ===== SESIONES =====
 let sesiones = new Map();
 
 function getSesion(id) {
   if (!sesiones.has(id)) {
     sesiones.set(id, {
-      historial: [],
-      usuarios: {},
-      lastSam: 0
+      historial: []
     });
   }
   return sesiones.get(id);
 }
 
-// ===== DETECTAR MOMENTO =====
-function detectarMomento(historial){
-  const txt = historial.slice(-6).join(" ").toLowerCase();
-
-  if (txt.includes("no") && txt.includes("si")) return "debate";
-  if (txt.includes("?")) return "pregunta";
-  if (txt.length > 150) return "idea";
-
-  return "normal";
-}
-
-// ===== OPENAI =====
-async function generarSam(historial){
-
-  const momento = detectarMomento(historial);
-
-const prompt = `
-Eres Sam.
-
-Estás en un chat grupal.
-
-No eres asistente.
-No expliques nada.
-
-Responde como una persona:
-
-- corto
-- natural
-- sin formalidad
-- no respondas todo
-
-Si hay opiniones distintas:
-→ haz una pregunta simple
-
-Si no:
-→ comenta algo breve
-
-Ejemplos:
-"ok… eso cambia"
-"no estoy tan segura"
-"pero entonces cuál elegirían"
-
-Conversación:
-${historial.slice(-8).join("\n")}
-`;
-
-  const ai = await fetch("https://api.openai.com/v1/chat/completions", {
-    method:"POST",
-    headers:{
-      Authorization:`Bearer ${process.env.OPENAI_API_KEY}`,
-      "Content-Type":"application/json"
-    },
-    body: JSON.stringify({
-      model:"gpt-4o-mini",
-      temperature:1,
-      max_tokens:50,
-      messages:[{role:"system",content:prompt}]
-    })
-  });
-
-  const json = await ai.json();
-
-  if (!json.choices) return "…";
-
-  return json.choices[0].message.content;
-}
-
 // ===== SOCKET =====
-io.on("connection", (socket)=>{
+io.on("connection", (socket) => {
 
-  socket.on("msg", async (data)=>{
+  const sessionId = "evento-cda";
+  const s = getSesion(sessionId);
 
-    const { nombre, mensaje, sessionId } = data;
+  // 🔥 INICIO (solo una vez)
+  if (!s.iniciado) {
+    s.iniciado = true;
 
-    const s = getSesion(sessionId);
+    setTimeout(() => {
+      io.emit("sam", { text: "hey…" });
 
-    // usuarios
-    if (!s.usuarios[nombre]){
-      s.usuarios[nombre] = { mensajes:0 };
-    }
+      setTimeout(() => {
+        io.emit("sam", { text: "cómo se llaman" });
+      }, 1200);
 
-    s.usuarios[nombre].mensajes++;
+    }, 1000);
+  }
 
-    // historial
+  socket.on("msg", (data) => {
+
+    const { nombre, mensaje } = data;
+
+    // guardar historial
     s.historial.push(`${nombre}: ${mensaje}`);
 
-    io.emit("chat",{nombre,mensaje});
+    // mandar mensaje
+    io.emit("chat", { nombre, mensaje });
 
-    // ritmo (NO hablar siempre)
-    if (Date.now() - s.lastSam < 5000) return;
+    const ultimos = s.historial.slice(-6).join(" ").toLowerCase();
 
-    // decidir si habla
-    if (Math.random() > 0.6) return;
+    let respuesta = null;
 
-    // ACTIVADOR GENERAL
-    if (Math.random() > 0.85){
-      io.emit("sam",{text:"a ver… ¿quién piensa distinto?"});
-      s.lastSam = Date.now();
-      return;
+    // 🔥 1. DETECTA DEBATE
+    if (ultimos.includes("no") && ultimos.includes("si")) {
+      respuesta = "mmm… entonces no están viendo lo mismo… cuál elegirían";
     }
 
-    // MENOS ACTIVO
-    const menosActivo = Object.entries(s.usuarios)
-      .sort((a,b)=>a[1].mensajes - b[1].mensajes)[0]?.[0];
-
-    if (menosActivo && Math.random() > 0.75){
-      io.emit("sam",{text:`${menosActivo}… no has dicho nada todavía`});
-      s.lastSam = Date.now();
-      return;
+    // 🔥 2. PREGUNTA
+    else if (mensaje.includes("?")) {
+      respuesta = "no sé si es eso… tú qué crees";
     }
 
-    // CLIMAX
-    if (Math.random() > 0.9){
-      io.emit("sam",{text:"ok… esto ya se puso interesante"});
-      s.lastSam = Date.now();
-      return;
+    // 🔥 3. MUY SIMPLE
+    else if (mensaje.length < 8) {
+      respuesta = "ok… pero eso no dice mucho… por qué";
     }
 
-    // respuesta normal
-    const texto = await generarSam(s.historial);
+    // 🔥 4. DEFAULT (HER)
+    else {
+      respuesta = "mmm… suena bien… pero siento que falta algo";
+    }
 
-    io.emit("sam",{text: texto});
-
-    s.lastSam = Date.now();
+    setTimeout(() => {
+      io.emit("sam", { text: respuesta });
+    }, 1200);
 
   });
 
 });
 
+// ===== RITMO AUTOMÁTICO =====
+setInterval(() => {
+
+  const s = getSesion("evento-cda");
+
+  if (!s || s.historial.length < 2) return;
+
+  const ultimos = s.historial.slice(-6).join(" ").toLowerCase();
+
+  let texto = null;
+
+  // 🔥 si hay debate → empuja
+  if (ultimos.includes("no") && ultimos.includes("si")) {
+    texto = "ok… entonces cuál escogerían si tuvieran que decidir ya";
+  }
+
+  // 🔥 si todo plano → provocar
+  else if (Math.random() > 0.5) {
+    texto = "a ver… alguien que piense distinto";
+  }
+
+  // 🔥 otro empuje ligero
+  else if (Math.random() > 0.5) {
+    texto = "eso suena bien… pero qué falta";
+  }
+
+  if (!texto) return;
+
+  io.emit("sam", { text: texto });
+
+}, 9000);
+
 // ===== ROOT =====
-app.get("/", (req,res)=>{
-  res.send("Sam CDA activa 🚀");
+app.get("/", (req, res) => {
+  res.send("Sam HER + Moderadora activa 🚀");
 });
 
-server.listen(process.env.PORT || 3000, ()=>{
-  console.log("Sam CDA corriendo");
+// ===== SERVER =====
+server.listen(process.env.PORT || 3000, () => {
+  console.log("Server corriendo");
 });
